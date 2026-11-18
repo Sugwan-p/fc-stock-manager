@@ -1,11 +1,29 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle, Ban, CheckCircle2, ChevronDown, ChevronLeft,
-  ChevronRight, ClipboardList, Loader2, LogOut, Package, Plus,
-  RefreshCw, Search, Settings2, ShoppingBag,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
+import {
+  AlertCircle,
+  Ban,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardList,
+  Loader2,
+  LogOut,
+  Package,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings2,
+  ShoppingBag,
 } from "lucide-react";
 
 type Product = {
@@ -31,12 +49,20 @@ type QueueItem = {
 
 type Tab = "stop" | "resume" | "queue";
 type Action = "stop" | "resume" | "show" | "hide" | "price";
-type ProductResponse = { products: Product[]; errors: string[] };
 type AuthStatus = "checking" | "authenticated" | "login";
 
-const productKey = (p: Product) => `${p.mall}:${p.product_no}`;
+type ProductResponse = {
+  products: Product[];
+  errors?: string[];
+};
 
-async function api<T>(url: string, options?: RequestInit): Promise<T> {
+const productKey = (product: Product) =>
+  `${product.mall}:${product.product_no}`;
+
+async function api<T>(
+  url: string,
+  options?: RequestInit
+): Promise<T> {
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -49,28 +75,43 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const data: unknown = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const error = data as { error?: string };
-    throw new Error(error.error || `요청 실패 (${response.status})`);
+    const result = data as { error?: string };
+    throw new Error(
+      result.error || `요청 실패 (${response.status})`
+    );
   }
 
   return data as T;
 }
 
+function getErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export default function HomePage() {
-  const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
+  const [authStatus, setAuthStatus] =
+    useState<AuthStatus>("checking");
+
   const [password, setPassword] = useState("");
   const [malls, setMalls] = useState<Mall[]>([]);
   const [mall, setMall] = useState("all");
   const [newMall, setNewMall] = useState("");
+
   const [tab, setTab] = useState<Tab>("stop");
   const [products, setProducts] = useState<Product[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+
   const [query, setQuery] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [priceText, setPriceText] = useState("");
 
@@ -115,12 +156,10 @@ export default function HomePage() {
           setMessage(data.errors.join(" / "));
         }
       } catch (error) {
-        setMessage(
-          error instanceof Error
-            ? error.message
-            : "상품 조회에 실패했습니다."
-        );
         setProducts([]);
+        setMessage(
+          getErrorMessage(error, "상품 조회에 실패했습니다.")
+        );
       } finally {
         setBusy(false);
       }
@@ -133,48 +172,36 @@ export default function HomePage() {
 
     async function initialize() {
       try {
-        const data = await api<{ malls: Mall[] }>("/api/malls");
+        const data = await api<{ malls: Mall[] }>(
+          "/api/malls"
+        );
 
-        if (!cancelled) {
-          setMalls(data.malls || []);
+        if (cancelled) return;
+
+        setMalls(data.malls || []);
+        setAuthStatus("authenticated");
+
+        try {
+          const queueData = await api<{
+            items: QueueItem[];
+          }>("/api/queue");
+
+          if (!cancelled) {
+            setQueue(queueData.items || []);
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setMessage(
+              getErrorMessage(
+                error,
+                "해제 예정 목록을 불러오지 못했습니다."
+              )
+            );
+          }
         }
       } catch {
-        try {
-          // 로컬 개발 환경에서만 자동 로그인합니다.
-          await api("/api/auth/dev-login", {
-            method: "POST",
-          });
-
-          const data = await api<{ malls: Mall[] }>("/api/malls");
-
-          if (!cancelled) {
-            setMalls(data.malls || []);
-          }
-        } catch {
-          if (!cancelled) {
-            setAuthStatus("login");
-          }
-          return;
-        }
-      }
-
-      if (cancelled) return;
-
-      setAuthStatus("authenticated");
-
-      try {
-        const data = await api<{ items: QueueItem[] }>("/api/queue");
-
         if (!cancelled) {
-          setQueue(data.items || []);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setMessage(
-            error instanceof Error
-              ? error.message
-              : "예정 목록 조회 실패"
-          );
+          setAuthStatus("login");
         }
       }
     }
@@ -189,31 +216,51 @@ export default function HomePage() {
   useEffect(() => {
     if (authStatus !== "authenticated") return;
 
-    void loadProducts(mall, tab, page, searchQuery);
-  }, [authStatus, mall, tab, page, searchQuery, loadProducts]);
+    void loadProducts(
+      mall,
+      tab,
+      page,
+      searchQuery
+    );
+  }, [
+    authStatus,
+    mall,
+    tab,
+    page,
+    searchQuery,
+    loadProducts,
+  ]);
 
-  const visible = useMemo(
-    () =>
-      products.filter((p) => {
-        if (tab === "stop") return p.selling;
-        if (tab === "resume") return !p.selling;
+  const visible = useMemo(() => {
+    return products.filter((product) => {
+      if (tab === "stop") {
+        return product.selling;
+      }
 
-        return queue.some(
-          (item) =>
-            item.mall_id === p.mall &&
-            item.product_no === p.product_no
-        );
-      }),
-    [products, queue, tab]
-  );
+      if (tab === "resume") {
+        return !product.selling;
+      }
 
-  const chosen = products.filter((p) =>
-    selected.includes(productKey(p))
-  );
+      return queue.some(
+        (item) =>
+          item.mall_id === product.mall &&
+          item.product_no === product.product_no
+      );
+    });
+  }, [products, queue, tab]);
 
-  const scopedQueue = queue.filter(
-    (item) => mall === "all" || item.mall_id === mall
-  );
+  const chosen = useMemo(() => {
+    return products.filter((product) =>
+      selected.includes(productKey(product))
+    );
+  }, [products, selected]);
+
+  const scopedQueue = useMemo(() => {
+    return queue.filter(
+      (item) =>
+        mall === "all" || item.mall_id === mall
+    );
+  }, [queue, mall]);
 
   const stats = [
     {
@@ -255,8 +302,11 @@ export default function HomePage() {
     setMessage("");
   }
 
-  async function login(event: React.FormEvent<HTMLFormElement>) {
+  async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (busy) return;
+
     setBusy(true);
     setMessage("");
 
@@ -267,12 +317,14 @@ export default function HomePage() {
       });
 
       setPassword("");
+
       await loadMalls();
       await loadQueue();
+
       setAuthStatus("authenticated");
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "로그인 실패"
+        getErrorMessage(error, "로그인에 실패했습니다.")
       );
     } finally {
       setBusy(false);
@@ -290,9 +342,26 @@ export default function HomePage() {
       setProducts([]);
       setQueue([]);
       setSelected([]);
+      setMessage("");
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "로그아웃 실패"
+        getErrorMessage(error, "로그아웃에 실패했습니다.")
+      );
+    }
+  }
+
+  async function refreshAll() {
+    setMessage("");
+
+    try {
+      await Promise.all([
+        loadMalls(),
+        loadQueue(),
+        loadProducts(mall, tab, page, searchQuery),
+      ]);
+    } catch (error) {
+      setMessage(
+        getErrorMessage(error, "새로고침에 실패했습니다.")
       );
     }
   }
@@ -308,13 +377,11 @@ export default function HomePage() {
       price: "판매가 대체문구 변경",
     };
 
-    if (
-      !window.confirm(
-        `${chosen.length}개 상품을 ${labels[action]}하시겠습니까?`
-      )
-    ) {
-      return;
-    }
+    const confirmed = window.confirm(
+      `${chosen.length}개 상품을 ${labels[action]}하시겠습니까?`
+    );
+
+    if (!confirmed) return;
 
     setBusy(true);
     setMessage("");
@@ -326,9 +393,9 @@ export default function HomePage() {
       }>("/api/bulk", {
         method: "POST",
         body: JSON.stringify({
-          items: chosen.map((p) => ({
-            mall: p.mall,
-            product_no: p.product_no,
+          items: chosen.map((product) => ({
+            mall: product.mall,
+            product_no: product.product_no,
           })),
           action,
           text: priceText,
@@ -336,23 +403,28 @@ export default function HomePage() {
       });
 
       await loadQueue();
-      await loadProducts(mall, tab, page, searchQuery);
+      await loadProducts(
+        mall,
+        tab,
+        page,
+        searchQuery
+      );
 
       setMessage(
         `처리 완료 · 성공 ${result.success}건 / 실패 ${result.failed}건`
       );
     } catch (error) {
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "상품 변경에 실패했습니다."
+        getErrorMessage(error, "상품 변경에 실패했습니다.")
       );
     } finally {
       setBusy(false);
     }
   }
 
-  async function updateQueue(method: "POST" | "DELETE") {
+  async function updateQueue(
+    method: "POST" | "DELETE"
+  ) {
     if (busy || chosen.length === 0) return;
 
     setBusy(true);
@@ -362,15 +434,20 @@ export default function HomePage() {
       await api("/api/queue", {
         method,
         body: JSON.stringify({
-          items: chosen.map((p) => ({
-            mall: p.mall,
-            product_no: p.product_no,
+          items: chosen.map((product) => ({
+            mall: product.mall,
+            product_no: product.product_no,
           })),
         }),
       });
 
       await loadQueue();
-      await loadProducts(mall, tab, page, searchQuery);
+      await loadProducts(
+        mall,
+        tab,
+        page,
+        searchQuery
+      );
 
       setMessage(
         method === "POST"
@@ -379,19 +456,52 @@ export default function HomePage() {
       );
     } catch (error) {
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "목록 변경에 실패했습니다."
+        getErrorMessage(error, "목록 변경에 실패했습니다.")
       );
     } finally {
       setBusy(false);
     }
   }
 
+  function toggleProduct(
+    product: Product,
+    checked: boolean
+  ) {
+    const id = productKey(product);
+
+    setSelected((current) =>
+      checked
+        ? [...new Set([...current, id])]
+        : current.filter((item) => item !== id)
+    );
+  }
+
+  function toggleAll(checked: boolean) {
+    setSelected(
+      checked ? visible.map(productKey) : []
+    );
+  }
+
+  function submitSearch(
+    event: FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+
+    setPage(1);
+    setSearchQuery(query);
+
+    if (page === 1 && searchQuery === query) {
+      void loadProducts(mall, tab, 1, query);
+    }
+  }
+
   if (authStatus === "checking") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-600">
-        <Loader2 className="mr-2 animate-spin" size={20} />
+        <Loader2
+          className="mr-2 animate-spin"
+          size={20}
+        />
         연결 확인 중...
       </main>
     );
@@ -415,22 +525,27 @@ export default function HomePage() {
           <input
             type="password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(event) =>
+              setPassword(event.target.value)
+            }
             placeholder="관리자 비밀번호"
             autoComplete="current-password"
             className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
           />
 
           <button
-            disabled={busy || !password}
             type="submit"
+            disabled={busy || !password}
             className="w-full rounded-xl bg-slate-900 py-3 font-semibold text-white disabled:opacity-40"
           >
-            로그인
+            {busy ? "로그인 중..." : "로그인"}
           </button>
 
           {message && (
-            <p role="alert" className="text-sm text-rose-600">
+            <p
+              role="alert"
+              className="text-sm text-rose-600"
+            >
               {message}
             </p>
           )}
@@ -472,17 +587,22 @@ export default function HomePage() {
               <select
                 id="mall-select"
                 value={mall}
-                onChange={(e) => {
-                  setMall(e.target.value);
+                onChange={(event) => {
+                  setMall(event.target.value);
                   setPage(1);
                   setSelected([]);
                 }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-500"
               >
-                <option value="all">전체 쇼핑몰</option>
+                <option value="all">
+                  전체 쇼핑몰
+                </option>
 
                 {malls.map((item) => (
-                  <option key={item.mall_id} value={item.mall_id}>
+                  <option
+                    key={item.mall_id}
+                    value={item.mall_id}
+                  >
                     {item.mall_id}
                   </option>
                 ))}
@@ -490,14 +610,9 @@ export default function HomePage() {
             </div>
 
             <button
-              disabled={busy}
               type="button"
-              onClick={() => {
-                setMessage("");
-                void loadProducts(mall, tab, page, searchQuery);
-                void loadMalls();
-                void loadQueue();
-              }}
+              disabled={busy}
+              onClick={() => void refreshAll()}
               className="flex items-center gap-2 rounded-xl border border-slate-200 px-5 py-3 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
             >
               <RefreshCw size={17} />
@@ -509,7 +624,9 @@ export default function HomePage() {
             <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
               <input
                 value={newMall}
-                onChange={(e) => setNewMall(e.target.value)}
+                onChange={(event) =>
+                  setNewMall(event.target.value)
+                }
                 placeholder="쇼핑몰 ID 입력"
                 className="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-sm"
               />
@@ -518,8 +635,10 @@ export default function HomePage() {
                 type="button"
                 disabled={!newMall.trim()}
                 onClick={() => {
+                  const mallId = newMall.trim();
+
                   window.location.href =
-                    `/api/cafe24/connect?mall=${encodeURIComponent(newMall.trim())}`;
+                    `/api/cafe24/connect?mall=${encodeURIComponent(mallId)}`;
                 }}
                 className="flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-40"
               >
@@ -562,12 +681,22 @@ export default function HomePage() {
 
         {/* 상품 관리 */}
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          {/* 탭 */}
           <div className="grid grid-cols-3 border-b border-slate-200 px-4 md:px-6">
             {(
               [
-                { id: "stop", label: "품절 처리" },
-                { id: "resume", label: "품절 해제" },
-                { id: "queue", label: "해제 예정" },
+                {
+                  id: "stop",
+                  label: "품절 처리",
+                },
+                {
+                  id: "resume",
+                  label: "품절 해제",
+                },
+                {
+                  id: "queue",
+                  label: "해제 예정",
+                },
               ] as const
             ).map((item) => (
               <button
@@ -592,6 +721,7 @@ export default function HomePage() {
           </div>
 
           <div className="space-y-5 p-4 md:p-6">
+            {/* 제목 */}
             <div>
               <h2 className="text-lg font-bold">
                 {tab === "stop"
@@ -612,15 +742,7 @@ export default function HomePage() {
 
             {/* 검색 */}
             <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setPage(1);
-                setSearchQuery(query);
-
-                if (page === 1 && searchQuery === query) {
-                  void loadProducts(mall, tab, 1, query);
-                }
-              }}
+              onSubmit={submitSearch}
               className="flex gap-2"
             >
               <div className="relative flex-1">
@@ -631,7 +753,9 @@ export default function HomePage() {
 
                 <input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(event) =>
+                    setQuery(event.target.value)
+                  }
                   placeholder="상품명 또는 상품코드 검색"
                   className="w-full rounded-xl border border-slate-200 py-3 pl-11 pr-4 outline-none focus:border-blue-500"
                 />
@@ -653,16 +777,14 @@ export default function HomePage() {
                   type="checkbox"
                   checked={
                     visible.length > 0 &&
-                    visible.every((p) =>
-                      selected.includes(productKey(p))
+                    visible.every((product) =>
+                      selected.includes(
+                        productKey(product)
+                      )
                     )
                   }
-                  onChange={(e) =>
-                    setSelected(
-                      e.target.checked
-                        ? visible.map(productKey)
-                        : []
-                    )
+                  onChange={(event) =>
+                    toggleAll(event.target.checked)
                   }
                   className="h-4 w-4 accent-blue-600"
                 />
@@ -687,19 +809,13 @@ export default function HomePage() {
                 >
                   <input
                     type="checkbox"
-                    checked={selected.includes(productKey(product))}
-                    onChange={(e) =>
-                      setSelected((previous) =>
-                        e.target.checked
-                          ? [
-                              ...new Set([
-                                ...previous,
-                                productKey(product),
-                              ]),
-                            ]
-                          : previous.filter(
-                              (key) => key !== productKey(product)
-                            )
+                    checked={selected.includes(
+                      productKey(product)
+                    )}
+                    onChange={(event) =>
+                      toggleProduct(
+                        product,
+                        event.target.checked
                       )
                     }
                     className="h-4 w-4 accent-blue-600"
@@ -725,7 +841,9 @@ export default function HomePage() {
                         : "bg-rose-50 text-rose-700"
                     }`}
                   >
-                    {product.selling ? "판매함" : "판매안함"}
+                    {product.selling
+                      ? "판매함"
+                      : "판매안함"}
                   </span>
                 </label>
               ))}
@@ -767,7 +885,9 @@ export default function HomePage() {
 
                 <button
                   type="button"
-                  disabled={busy || products.length === 0}
+                  disabled={
+                    busy || products.length === 0
+                  }
                   onClick={() =>
                     setPage((current) => current + 1)
                   }
@@ -784,8 +904,12 @@ export default function HomePage() {
               {tab === "stop" && (
                 <button
                   type="button"
-                  disabled={busy || selected.length === 0}
-                  onClick={() => void performAction("stop")}
+                  disabled={
+                    busy || selected.length === 0
+                  }
+                  onClick={() =>
+                    void performAction("stop")
+                  }
                   className="w-full rounded-xl bg-rose-600 py-4 font-bold text-white hover:bg-rose-700 disabled:opacity-40"
                 >
                   선택 {selected.length}개 일괄 품절 처리
@@ -796,8 +920,12 @@ export default function HomePage() {
                 <div className="grid gap-3 md:grid-cols-2">
                   <button
                     type="button"
-                    disabled={busy || selected.length === 0}
-                    onClick={() => void performAction("resume")}
+                    disabled={
+                      busy || selected.length === 0
+                    }
+                    onClick={() =>
+                      void performAction("resume")
+                    }
                     className="rounded-xl bg-blue-600 py-4 font-bold text-white disabled:opacity-40"
                   >
                     선택 {selected.length}개 품절 해제
@@ -805,8 +933,12 @@ export default function HomePage() {
 
                   <button
                     type="button"
-                    disabled={busy || selected.length === 0}
-                    onClick={() => void updateQueue("POST")}
+                    disabled={
+                      busy || selected.length === 0
+                    }
+                    onClick={() =>
+                      void updateQueue("POST")
+                    }
                     className="rounded-xl border border-blue-200 bg-blue-50 py-4 font-bold text-blue-700 disabled:opacity-40"
                   >
                     해제 예정에 등록
@@ -818,8 +950,12 @@ export default function HomePage() {
                 <div className="grid gap-3 md:grid-cols-2">
                   <button
                     type="button"
-                    disabled={busy || selected.length === 0}
-                    onClick={() => void performAction("resume")}
+                    disabled={
+                      busy || selected.length === 0
+                    }
+                    onClick={() =>
+                      void performAction("resume")
+                    }
                     className="rounded-xl bg-blue-600 py-4 font-bold text-white disabled:opacity-40"
                   >
                     선택 {selected.length}개 직접 품절 해제
@@ -827,8 +963,12 @@ export default function HomePage() {
 
                   <button
                     type="button"
-                    disabled={busy || selected.length === 0}
-                    onClick={() => void updateQueue("DELETE")}
+                    disabled={
+                      busy || selected.length === 0
+                    }
+                    onClick={() =>
+                      void updateQueue("DELETE")
+                    }
                     className="rounded-xl border border-slate-200 py-4 font-bold text-slate-600 disabled:opacity-40"
                   >
                     예정 목록에서 삭제
@@ -842,7 +982,9 @@ export default function HomePage() {
               <button
                 type="button"
                 onClick={() =>
-                  setSettingsOpen((previous) => !previous)
+                  setSettingsOpen(
+                    (previous) => !previous
+                  )
                 }
                 className="flex w-full items-center justify-between text-sm font-semibold text-slate-600"
               >
@@ -868,8 +1010,12 @@ export default function HomePage() {
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
-                      disabled={busy || selected.length === 0}
-                      onClick={() => void performAction("show")}
+                      disabled={
+                        busy || selected.length === 0
+                      }
+                      onClick={() =>
+                        void performAction("show")
+                      }
                       className="rounded-xl border bg-white p-3 text-sm font-semibold disabled:opacity-40"
                     >
                       진열함
@@ -877,8 +1023,12 @@ export default function HomePage() {
 
                     <button
                       type="button"
-                      disabled={busy || selected.length === 0}
-                      onClick={() => void performAction("hide")}
+                      disabled={
+                        busy || selected.length === 0
+                      }
+                      onClick={() =>
+                        void performAction("hide")
+                      }
                       className="rounded-xl border bg-white p-3 text-sm font-semibold disabled:opacity-40"
                     >
                       진열안함
@@ -892,8 +1042,8 @@ export default function HomePage() {
                   <input
                     maxLength={20}
                     value={priceText}
-                    onChange={(e) =>
-                      setPriceText(e.target.value)
+                    onChange={(event) =>
+                      setPriceText(event.target.value)
                     }
                     placeholder="예: 가격문의, 일시품절"
                     className="w-full rounded-xl border bg-white px-4 py-3 text-sm"
@@ -901,16 +1051,20 @@ export default function HomePage() {
 
                   <button
                     type="button"
-                    disabled={busy || selected.length === 0}
-                    onClick={() => void performAction("price")}
+                    disabled={
+                      busy || selected.length === 0
+                    }
+                    onClick={() =>
+                      void performAction("price")
+                    }
                     className="w-full rounded-xl border bg-white py-3 text-sm font-semibold disabled:opacity-40"
                   >
                     선택 상품에 문구 적용
                   </button>
 
                   <p className="text-xs text-slate-500">
-                    대체문구 사용 여부는 카페24 API 지원
-                    확인 후 적용할 수 있습니다.
+                    대체문구 사용 여부는 카페24 API
+                    지원 및 설정을 확인해야 합니다.
                   </p>
                 </div>
               )}
