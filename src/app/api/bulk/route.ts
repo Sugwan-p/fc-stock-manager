@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
             if (body.text?.trim()) request.price_content = body.text.trim();
             break;
           case "resume":
-            request = { selling: "T" };
+            request = { selling: "T", display: "T" };
             if (body.clearPriceContent) request.price_content = "";
             break;
           case "show":
