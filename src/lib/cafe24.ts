@@ -320,38 +320,66 @@ export async function api(
 
   const cleanPath = path.replace(/^\/+/, "");
 
-  const response = await fetch(
-    `https://${id}.cafe24api.com/api/v2/admin/${cleanPath}`,
-    {
-      method: init?.method || "GET",
-      cache: "no-store",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "X-Cafe24-Api-Version": "2025-06-01",
-      },
-      body:
-        init?.body === undefined
-          ? undefined
-          : JSON.stringify(init.body),
-    }
+  const url = new URL(
+    `https://${id}.cafe24api.com/api/v2/admin/${cleanPath}`
   );
+
+  const response = await fetch(url.toString(), {
+    method: init?.method || "GET",
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      // 앱에 설정된 API 버전을 사용합니다.
+    },
+    body:
+      init?.body === undefined
+        ? undefined
+        : JSON.stringify(init.body),
+  });
 
   const data: unknown = await response
     .json()
     .catch(() => ({}));
 
   if (!response.ok) {
-    // 응답 본문에 민감한 정보가 있을 수 있으므로
-    // 서버 로그에는 상태 코드와 경로만 기록합니다.
-    console.error("카페24 Admin API 오류", {
+    const details =
+      data && typeof data === "object"
+        ? data as Record<string, unknown>
+        : {};
+
+    const errorObject =
+      details.error &&
+      typeof details.error === "object"
+        ? details.error as Record<string, unknown>
+        : null;
+
+    const errorCode =
+      typeof errorObject?.code === "string"
+        ? errorObject.code
+        : typeof details.code === "string"
+          ? details.code
+          : "";
+
+    const errorMessage =
+      typeof errorObject?.message === "string"
+        ? errorObject.message
+        : typeof details.message === "string"
+          ? details.message
+          : "상세 오류 메시지가 없습니다.";
+
+    console.error("카페24 Admin API 상세 오류", {
       mall: id,
-      path: cleanPath.split("?")[0],
+      path: url.pathname,
       status: response.status,
+      apiVersion:
+        response.headers.get("X-Cafe24-Api-Version"),
+      errorCode,
+      errorMessage,
     });
 
     throw new Error(
-      `Cafe24 API 요청 실패 (HTTP ${response.status})`
+      `Cafe24 HTTP ${response.status}: ${errorCode} ${errorMessage}`
     );
   }
 
