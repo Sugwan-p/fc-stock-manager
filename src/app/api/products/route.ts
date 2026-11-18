@@ -1,3 +1,4 @@
+
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth";
 import { api, mallId } from "@/lib/cafe24";
@@ -30,6 +31,14 @@ type Product = {
   price_content: string;
 };
 
+type ProductResponse = {
+  products?: Cafe24Product[];
+};
+
+type TabMode = "stop" | "resume" | "queue";
+
+const PAGE_SIZE = 50;
+
 function normalizeProduct(
   mall: string,
   product: Cafe24Product
@@ -56,7 +65,10 @@ function uniqueProducts(
   for (const product of products) {
     const productNo = Number(product.product_no);
 
-    if (Number.isSafeInteger(productNo) && productNo > 0) {
+    if (
+      Number.isSafeInteger(productNo) &&
+      productNo > 0
+    ) {
       map.set(productNo, product);
     }
   }
@@ -64,32 +76,86 @@ function uniqueProducts(
   return Array.from(map.values());
 }
 
+function matchesSearch(
+  product: Cafe24Product,
+  search: string
+): boolean {
+  if (!search) {
+    return true;
+  }
+
+  const keyword = search.toLowerCase();
+
+  return [
+    product.product_name,
+    product.product_code,
+    product.custom_product_code,
+    product.product_no,
+  ].some((value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .includes(keyword)
+  );
+}
+
+function matchesMode(
+  product: Cafe24Product,
+  mode: TabMode
+): boolean {
+  if (mode === "queue") {
+    return true;
+  }
+
+  if (mode === "stop") {
+    return product.selling === "T";
+  }
+
+  return product.selling === "F";
+}
+
+async function requestProducts(
+  mall: string,
+  params: URLSearchParams
+): Promise<Cafe24Product[]> {
+  const response = (await api(
+    mall,
+    `products?${params.toString()}`
+  )) as ProductResponse;
+
+  if (!Array.isArray(response.products)) {
+    return [];
+  }
+
+  return response.products;
+}
+
 async function fetchProducts(
   mall: string,
   page: number,
-  search: string
+  search: string,
+  mode: TabMode
 ): Promise<Cafe24Product[]> {
-  const limit = 50;
-  const offset = (page - 1) * limit;
+  const selling = mode === "resume" ? "F" : "T";
+
+  const baseParams = new URLSearchParams({
+    limit: String(PAGE_SIZE),
+    offset: String((page - 1) * PAGE_SIZE),
+    selling,
+  });
 
   if (!search) {
-    const params = new URLSearchParams({
-      limit: String(limit),
-      offset: String(offset),
-    });
-
-    const response = (await api(
+    const products = await requestProducts(
       mall,
-      `products?${params.toString()}`
-    )) as {
-      products?: Cafe24Product[];
-    };
+      baseParams
+    );
 
-    return response.products || [];
+    return uniqueProducts(
+      products.filter((product) =>
+        matchesMode(product, mode)
+      )
+    );
   }
 
-  // 상품명 / 자체 상품코드 / 카페24 상품코드
-  // 각각 조회한 결과를 합쳐 중복 제거합니다.
   const searchFields = [
     "product_name",
     "custom_product_code",
@@ -98,21 +164,11 @@ async function fetchProducts(
 
   const results = await Promise.allSettled(
     searchFields.map(async (field) => {
-      const params = new URLSearchParams({
-        limit: String(limit),
-        offset: String(offset),
-      });
+      const params = new URLSearchParams(baseParams);
 
       params.set(field, search);
 
-      const response = (await api(
-        mall,
-        `products?${params.toString()}`
-      )) as {
-        products?: Cafe24Product[];
-      };
-
-      return response.products || [];
+      return requestProducts(mall, params);
     })
   );
 
@@ -130,7 +186,9 @@ async function fetchProducts(
           ? result.reason.message
           : String(result.reason);
 
-      errors.push(`${searchFields[index]}: ${message}`);
+      errors.push(
+        `${searchFields[index]}: ${message}`
+      );
     }
   }
 
@@ -147,38 +205,107 @@ async function fetchProducts(
     );
   }
 
-  return uniqueProducts(products);
+  return uniqueProducts(products).filter(
+    (product) =>
+      matchesMode(product, mode) &&
+      matchesSearch(product, search)
+  );
+}
+
+async function fetchQueueProducts(
+  mall: string,
+  rows: QueueRow[],
+  search: string
+): Promise<Cafe24Product[]> {
+  const targets = rows.filter(
+    (item) => item.mall_id === mall
+  );
+
+  const fetched = await Promise.all(
+    targets.map(async (item) => {
+      try {
+        const response = (await api(
+          mall,
+          `products/${item.product_no}`
+        )) as {
+          product?: Cafe24Product;
+        };
+
+        return response.product || null;
+      } catch (error) {
+        console.error(
+          `[${mall}] 상품 ${item.product_no} 조회 실패:`,
+          error instanceof Error
+            ? error.message
+            : String(error)
+        );
+
+        return null;
+      }
+    })
+  );
+
+  return uniqueProducts(
+    fetched.filter(
+      (item): item is Cafe24Product =>
+        item !== null
+    )
+  ).filter((product) =>
+    matchesSearch(product, search)
+  );
 }
 
 export async function GET(req: NextRequest) {
   try {
     await requireAdmin();
 
-    const requested =
-      req.nextUrl.searchParams.get("mall") || "all";
+    const params = req.nextUrl.searchParams;
 
-    const search =
-      (req.nextUrl.searchParams.get("q") || "").trim();
+    const requested = params.get("mall") || "all";
+
+    const search = (
+      params.get("q") || ""
+    ).trim();
 
     const rawPage = Number(
-      req.nextUrl.searchParams.get("page") || "1"
+      params.get("page") || "1"
     );
 
     const page = Number.isFinite(rawPage)
       ? Math.max(
           1,
-          Math.min(10000, Math.floor(rawPage))
+          Math.min(
+            10000,
+            Math.floor(rawPage)
+          )
         )
       : 1;
 
-    const queueMode =
-      req.nextUrl.searchParams.get("mode") === "queue";
+    const rawMode = params.get("mode");
+    const rawTab = params.get("tab");
+
+    let mode: TabMode = "stop";
+
+    if (
+      rawMode === "queue" ||
+      rawTab === "queue"
+    ) {
+      mode = "queue";
+    } else if (
+      rawMode === "resume" ||
+      rawTab === "resume"
+    ) {
+      mode = "resume";
+    }
 
     if (requested !== "all") {
       mallId(requested);
     }
 
-    const { data: malls, error: mallsError } = await db()
+    const {
+      data: malls,
+      error: mallsError,
+    } = await db()
       .from("cafe24_malls")
       .select("mall_id")
       .order("mall_id");
@@ -190,95 +317,71 @@ export async function GET(req: NextRequest) {
     const ids = (malls || [])
       .map((item) => item.mall_id)
       .filter(
-        (id) => requested === "all" || id === requested
+        (id) =>
+          requested === "all" ||
+          id === requested
       );
 
     if (ids.length === 0) {
       return NextResponse.json({
         products: [],
-        errors: ["연결된 쇼핑몰이 없습니다."],
+        errors: [
+          "연결된 쇼핑몰이 없습니다.",
+        ],
         page,
+        mode,
       });
     }
 
     let queueRows: QueueRow[] = [];
 
-    if (queueMode) {
-      const { data, error } = await db()
+    if (mode === "queue") {
+      const {
+        data,
+        error,
+      } = await db()
         .from("cafe24_release_queue")
-        .select("mall_id,product_no");
+        .select(
+          "mall_id,product_no"
+        );
 
       if (error) {
         throw error;
       }
 
-      queueRows = (data || []) as QueueRow[];
+      queueRows = (
+        data || []
+      ) as QueueRow[];
     }
 
     const results = await Promise.all(
       ids.map(async (mall) => {
         try {
-          let products: Cafe24Product[] = [];
+          let products: Cafe24Product[];
 
-          if (queueMode) {
-            const targets = queueRows.filter(
-              (item) => item.mall_id === mall
+          if (mode === "queue") {
+            products = await fetchQueueProducts(
+              mall,
+              queueRows,
+              search
             );
-
-            const fetched = await Promise.all(
-              targets.map(async (item) => {
-                try {
-                  const response = (await api(
-                    mall,
-                    `products/${item.product_no}`
-                  )) as {
-                    product?: Cafe24Product;
-                  };
-
-                  return response.product || null;
-                } catch (error) {
-                  console.error(
-                    `[${mall}] 상품 ${item.product_no} 조회 실패:`,
-                    error
-                  );
-
-                  return null;
-                }
-              })
-            );
-
-            products = fetched.filter(
-              (item): item is Cafe24Product =>
-                item !== null
-            );
-
-            if (search) {
-              const keyword = search.toLowerCase();
-
-              products = products.filter((product) =>
-                [
-                  product.product_name,
-                  product.product_code,
-                  product.custom_product_code,
-                ].some((value) =>
-                  String(value || "")
-                    .toLowerCase()
-                    .includes(keyword)
-                )
-              );
-            }
           } else {
             products = await fetchProducts(
               mall,
               page,
-              search
+              search,
+              mode
             );
           }
 
           return {
             mall,
-            products: products.map((product) =>
-              normalizeProduct(mall, product)
+            products: products.map(
+              (product) =>
+                normalizeProduct(
+                  mall,
+                  product
+                )
             ),
             error: "",
           };
@@ -296,7 +399,8 @@ export async function GET(req: NextRequest) {
           return {
             mall,
             products: [] as Product[],
-            error: `${mall} 상품 조회 실패: ${detail}`,
+            error:
+              `${mall} 상품 조회 실패: ${detail}`,
           };
         }
       })
@@ -307,12 +411,21 @@ export async function GET(req: NextRequest) {
         (result) => result.products
       ),
       errors: results
-        .filter((result) => result.error)
-        .map((result) => result.error),
+        .filter(
+          (result) => result.error
+        )
+        .map(
+          (result) => result.error
+        ),
       page,
+      mode,
     });
   } catch (error) {
-    console.error("GET /api/products 오류:", error);
+    console.error(
+      "GET /api/products 오류:",
+      error
+    );
+
     return fail(error);
   }
 }
