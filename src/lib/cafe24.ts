@@ -16,24 +16,43 @@ export function mallId(raw: string): string {
   return id;
 }
 
-function config() {
-  const id = process.env.CAFE24_CLIENT_ID;
-  const secret = process.env.CAFE24_CLIENT_SECRET;
+function config(mall: string) {
+  const id = mallId(mall);
+
   const redirect = process.env.CAFE24_REDIRECT_URI;
 
-  if (!id || !secret || !redirect) {
-    throw new Error("카페24 환경변수가 누락되었습니다.");
+  let clientId: string | undefined;
+  let clientSecret: string | undefined;
+
+  if (id === "dainstore") {
+    clientId = process.env.CAFE24_CLIENT_ID;
+    clientSecret = process.env.CAFE24_CLIENT_SECRET;
+  } else if (id === "dainfp") {
+    clientId = process.env.CAFE24_SECOND_CLIENT_ID;
+    clientSecret = process.env.CAFE24_SECOND_CLIENT_SECRET;
+  } else {
+    throw new Error(`등록되지 않은 쇼핑몰 ID: ${id}`);
   }
 
-  return { id, secret, redirect };
+  if (!clientId || !clientSecret || !redirect) {
+    throw new Error(
+      `${id} 카페24 API 환경변수가 누락되었습니다.`
+    );
+  }
+
+  return {
+    id: clientId,
+    secret: clientSecret,
+    redirect,
+  };
 }
 
 export function authorizeUrl(
   mall: string,
   state: string
 ): string {
-  const c = config();
   const id = mallId(mall);
+  const c = config(id);
 
   const url = new URL(
     `https://${id}.cafe24api.com/api/v2/oauth/authorize`
@@ -68,8 +87,8 @@ async function tokenRequest(
   mall: string,
   params: URLSearchParams
 ): Promise<Token> {
-  const c = config();
   const id = mallId(mall);
+  const c = config(id);
 
   const response = await fetch(
     `https://${id}.cafe24api.com/api/v2/oauth/token`,
@@ -77,19 +96,16 @@ async function tokenRequest(
       method: "POST",
       cache: "no-store",
       headers: {
-        Authorization:
-          `Basic ${Buffer.from(
-            `${c.id}:${c.secret}`
-          ).toString("base64")}`,
-        "Content-Type":
-          "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(
+          `${c.id}:${c.secret}`
+        ).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
       body: params.toString(),
     }
   );
 
   if (!response.ok) {
-    // 토큰 및 인증 코드는 로그에 출력하지 않습니다.
     console.error("카페24 토큰 요청 실패", {
       mall: id,
       status: response.status,
@@ -114,14 +130,15 @@ async function tokenRequest(
     !token.expires_at ||
     !token.refresh_token_expires_at
   ) {
-    throw new Error("카페24 토큰 응답에 필수 값이 없습니다.");
+    throw new Error(
+      "카페24 토큰 응답에 필수 값이 없습니다."
+    );
   }
 
-  if (
-    token.mall_id &&
-    mallId(token.mall_id) !== id
-  ) {
-    throw new Error("카페24 쇼핑몰 ID가 일치하지 않습니다.");
+  if (token.mall_id && mallId(token.mall_id) !== id) {
+    throw new Error(
+      "카페24 쇼핑몰 ID가 일치하지 않습니다."
+    );
   }
 
   return token as Token;
@@ -131,7 +148,7 @@ export async function exchange(
   mall: string,
   code: string
 ): Promise<Token> {
-  const c = config();
+  const c = config(mall);
 
   return tokenRequest(
     mall,
@@ -154,12 +171,8 @@ export async function saveTokens(
     .upsert(
       {
         mall_id: id,
-        access_token_enc: encrypt(
-          token.access_token
-        ),
-        refresh_token_enc: encrypt(
-          token.refresh_token
-        ),
+        access_token_enc: encrypt(token.access_token),
+        refresh_token_enc: encrypt(token.refresh_token),
         access_expires_at: token.expires_at,
         refresh_expires_at:
           token.refresh_token_expires_at,
@@ -216,8 +229,6 @@ export async function accessToken(
 ): Promise<string> {
   const id = mallId(mall);
 
-  // 여러 요청에서 토큰 갱신이 경합할 때
-  // 무한 재귀를 방지합니다.
   for (let attempt = 0; attempt < 3; attempt++) {
     const current = await row(id);
 
@@ -286,11 +297,14 @@ export async function accessToken(
       .select("mall_id");
 
     if (error) {
-      console.error("카페24 토큰 갱신 저장 실패", {
-        mall: id,
-        code: error.code,
-        message: error.message,
-      });
+      console.error(
+        "카페24 토큰 갱신 저장 실패",
+        {
+          mall: id,
+          code: error.code,
+          message: error.message,
+        }
+      );
 
       throw new Error(
         "카페24 갱신 토큰 저장에 실패했습니다."
@@ -330,7 +344,6 @@ export async function api(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
-      // 앱에 설정된 API 버전을 사용합니다.
     },
     body:
       init?.body === undefined
@@ -345,13 +358,13 @@ export async function api(
   if (!response.ok) {
     const details =
       data && typeof data === "object"
-        ? data as Record<string, unknown>
+        ? (data as Record<string, unknown>)
         : {};
 
     const errorObject =
       details.error &&
       typeof details.error === "object"
-        ? details.error as Record<string, unknown>
+        ? (details.error as Record<string, unknown>)
         : null;
 
     const errorCode =
@@ -372,8 +385,6 @@ export async function api(
       mall: id,
       path: url.pathname,
       status: response.status,
-      apiVersion:
-        response.headers.get("X-Cafe24-Api-Version"),
       errorCode,
       errorMessage,
     });
