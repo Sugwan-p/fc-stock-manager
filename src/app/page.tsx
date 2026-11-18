@@ -1073,6 +1073,7 @@ export default function HomePage() {
         </section>
 
         {/* 결과 메시지 */}
+        
         {message && (
           <div
             role="status"
