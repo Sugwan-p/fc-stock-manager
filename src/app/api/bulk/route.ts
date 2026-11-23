@@ -60,8 +60,14 @@ export async function POST(req: NextRequest) {
         let request: Record<string, string>;
         switch (body.action) {
           case "stop":
-            request = { selling: "F" };
-            if (body.text?.trim()) request.price_content = body.text.trim();
+            {
+              const phrase = (body.text ?? "").trim();
+              request = {
+                selling: "F",
+                display: phrase ? "T" : "F",
+                price_content: phrase,
+              };
+            }
             break;
           case "resume":
             request = { selling: "T", display: "T" };
@@ -85,27 +91,6 @@ export async function POST(req: NextRequest) {
           body: { request },
         });
 
-        if (body.action === "resume") {
-          const { error: queueError } = await db()
-            .from("cafe24_release_queue")
-            .delete()
-            .eq("mall_id", item.mall)
-            .eq("product_no", item.product_no);
-          if (queueError) {
-            console.error("해제 예정 목록 삭제 실패", {
-              mall: item.mall,
-              product_no: item.product_no,
-              code: queueError.code,
-              message: queueError.message,
-            });
-            results.push({
-              ...item,
-              ok: true,
-              error: "상품 수정 성공, 해제 예정 목록 삭제 실패",
-            });
-            continue;
-          }
-        }
         results.push({ ...item, ok: true });
       } catch (error) {
         const message = error instanceof Error ? error.message : "알 수 없는 오류";

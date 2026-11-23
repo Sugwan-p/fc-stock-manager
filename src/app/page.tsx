@@ -26,6 +26,7 @@ import {
   ShoppingBag,
 } from "lucide-react";
 import { ConfirmDialog, InputDialog, ResultDialog, type ResultInfo } from "@/components/action-dialogs";
+import QueueDateDialog from "@/components/queue-date-dialog";
 type Product = {
   mall: string;
   product_no: number;
@@ -43,8 +44,11 @@ type Mall = {
 type QueueItem = {
   mall_id: string;
   product_no: number;
-  memo: string;
+    memo: string;
+  scheduled_date?: string | null;
+  status?: string;
 };
+
 type Tab = "stop" | "resume" | "queue";
 type Action = "stop" | "resume" | "show" | "hide" | "price";
 type AuthStatus = "checking" | "authenticated" | "login";
@@ -114,7 +118,9 @@ export default function HomePage() {
   const [newMall, setNewMall] = useState("");
   const [tab, setTab] = useState<Tab>("stop");
   const [products, setProducts] = useState<Product[]>([]);
-  const [queue, setQueue] = useState<QueueItem[]>([]);
+    const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [queueDateOpen, setQueueDateOpen] = useState(false);
+  
   const [selectedByTab, setSelectedByTab] = useState<Record<Tab, Product[]>>({ stop: [], resume: [], queue: [] });
   const selectedProducts = selectedByTab[tab];
   const selected = useMemo(() => selectedProducts.map(productKey), [selectedProducts]);
@@ -150,8 +156,8 @@ export default function HomePage() {
           q: currentQuery,
           mode: currentTab,
         });
-        if (currentTab === "queue") {
-          params.set("mode", "queue");
+                if (currentTab === "queue") {
+          params.set("mode", currentQuery.trim() ? "resume" : "queue");
         }
         const data = await api<ProductResponse>(
           `/api/products?${params.toString()}`
@@ -234,13 +240,13 @@ export default function HomePage() {
       if (tab === "resume") {
         return !product.selling;
       }
-      return queue.some(
-        (item) =>
-          item.mall_id === product.mall &&
-          item.product_no === product.product_no
-      );
+              return searchQuery.trim() ? !product.selling : queue.some(
+          (item) =>
+            item.mall_id === product.mall &&
+            item.product_no === product.product_no
+        );
     });
-  }, [products, queue, tab]);
+    }, [products, queue, tab, searchQuery]);
   const chosen = selectedProducts;
   const scopedQueue = useMemo(() => {
     return queue.filter(
@@ -346,13 +352,14 @@ export default function HomePage() {
     let text: string | undefined;
     let clearPriceContent = false;
     if (action === "stop") {
-      const wantsText = await askConfirm("대체 문구 등록", "품절 처리하면서 대체 문구도 등록하시겠습니까? 아니요를 선택하면 기존 문구는 변경하지 않고 품절 처리합니다.", "예, 등록", "아니요, 품절만");
+      const wantsText = await askConfirm("대체 문구 등록", "대체 문구를 등록하시겠습니까? 문구를 입력하면 판매안함 + 진열함, 등록하지 않거나 빈칸이면 판매안함 + 진열안함으로 처리합니다. 기존 대체 문구도 삭제됩니다.", "예, 등록", "아니요, 진열안함");
       if (wantsText) {
-        const entered = await askInput("대체 문구 입력", "최대 20자까지 입력할 수 있습니다. 빈칸으로 저장하면 문구 변경 없이 품절 처리됩니다.");
+        const entered = await askInput("대체 문구 입력", "최대 20자까지 입력할 수 있습니다. 빈칸으로 등록하면 진열안함 처리하고 기존 대체 문구도 삭제합니다.");
         if (entered === null) return;
-        if (entered.trim()) text = entered.trim();
+        text = entered.trim();
       }
     }
+    if (action === "stop" && text === undefined) text = "";
     if (action === "resume") {
       const hasPhrase = chosen.some((p) => Boolean(p.price_content?.trim()));
       if (hasPhrase) clearPriceContent = await askConfirm("기존 대체 문구 삭제", "선택 상품 중 기존 대체 문구가 있습니다. 문구를 삭제한 뒤 품절 해제하시겠습니까? 아니요를 선택하면 문구를 유지합니다.", "예, 삭제 후 해제", "아니요, 유지 후 해제");
@@ -369,7 +376,21 @@ export default function HomePage() {
         if (successfulKeys.size > 0) {
           setSelectedByTab(current => ({ ...current, [tab]: current[tab].filter(item => !successfulKeys.has(productKey(item))) }));
         }
-      const failed = (result.results || []).filter((r) => !r.ok);
+              if (action === "resume" && successfulKeys.size > 0) {
+          try {
+            const completedItems = items.filter(item => successfulKeys.has(`${item.mall}:${item.product_no}`));
+            const synced = await api<{ results: { ok: boolean; error?: string }[] }>("/api/queue", {
+              method: "PATCH", body: JSON.stringify({ items: completedItems }),
+            });
+            if (synced.results.some(item => !item.ok)) {
+              setMessage("상품 품절 해제는 완료됐으나 일부 예정 이력 반영이 지연되었습니다. 새로고침 후 확인해주세요.");
+            }
+          } catch (syncError) {
+            setMessage(`상품 품절 해제 완료, 예정 이력 반영 실패: ${getErrorMessage(syncError, "오류")}`);
+          }
+        }
+
+        const failed = (result.results || []).filter((r) => !r.ok);
       const warnings = (result.results || []).filter((r) => r.ok && r.error);
       setResultDialog({
         title: result.failed === 0 && warnings.length === 0 ? `${labels[action]} 완료` : `${labels[action]} 결과`,
@@ -383,34 +404,30 @@ export default function HomePage() {
       setResultDialog({ title: `${labels[action]} 실패`, success: 0, failed: items.length, details: [getErrorMessage(error, "요청 실패")] });
     } finally { setBusy(false); }
   }
-  async function updateQueue(
-    method: "POST" | "DELETE"
-  ) {
+  async function updateQueue(method: "POST" | "DELETE", scheduledDate?: string) {
     if (busy || chosen.length === 0) return;
+    if (method === "POST" && !scheduledDate) { setQueueDateOpen(true); return; }
+    const count = chosen.length;
     setBusy(true);
     setMessage("");
     try {
       await api("/api/queue", {
         method,
         body: JSON.stringify({
-          items: chosen.map((product) => ({
-            mall: product.mall,
-            product_no: product.product_no,
-          })),
+          items: chosen.map(product => ({ mall: product.mall, product_no: product.product_no })),
+          ...(scheduledDate ? { scheduled_date: scheduledDate } : {}),
         }),
       });
       clearSelection();
+      setQueueDateOpen(false);
       await loadQueue();
       await loadProducts(mall, tab, page, searchQuery);
-      setResultDialog({ title: method === "POST" ? "해제 예정 등록 완료" : "해제 예정 삭제 완료", success: chosen.length, failed: 0, details: [] });
+      setResultDialog({ title: method === "POST" ? "해제 예정 등록 완료" : "해제 예정 목록 제외 완료", success: count, failed: 0, details: [] });
     } catch (error) {
-      setMessage(
-        getErrorMessage(error, "목록 변경에 실패했습니다.")
-      );
-    } finally {
-      setBusy(false);
-    }
+      setResultDialog({ title: "해제 예정 처리 실패", success: 0, failed: count, details: [getErrorMessage(error, "목록 변경에 실패했습니다.")] });
+    } finally { setBusy(false); }
   }
+
   function toggleProduct(product: Product, checked: boolean) {
     const key = productKey(product);
     setSelectedByTab(current => ({
@@ -420,7 +437,6 @@ export default function HomePage() {
         : current[tab].filter(item => productKey(item) !== key),
     }));
   }
-
   function toggleAll(checked: boolean) {
     const visibleKeys = new Set(visible.map(productKey));
     setSelectedByTab(current => ({
@@ -430,7 +446,6 @@ export default function HomePage() {
         : current[tab].filter(item => !visibleKeys.has(productKey(item))),
     }));
   }
-
   function submitSearch(
     event: FormEvent<HTMLFormElement>
   ) {
@@ -660,7 +675,7 @@ export default function HomePage() {
                   ? "판매 중인 상품을 선택하여 일괄 처리합니다."
                   : tab === "resume"
                     ? "판매안함 상품을 선택하여 판매를 재개합니다."
-                    : "등록된 상품을 확인한 후 직접 품절 해제합니다."}
+                                          : "상품 검색 후 예정 날짜를 지정해 등록하거나, 등록된 상품을 직접 품절 해제합니다."}
               </p>
             </div>
             {/* 검색 */}
@@ -690,7 +705,12 @@ export default function HomePage() {
                 검색
               </button>
             </form>
-            {/* 전체 선택 */}
+                          {tab === "queue" && (
+                <p className="text-xs text-slate-500">
+                  {searchQuery.trim() ? "검색 결과에서 판매안함 상품을 선택해 예정 등록할 수 있습니다. 검색어를 지우면 등록된 예정 목록이 표시됩니다." : "현재 등록된 해제 예정 상품입니다. 새 상품 등록은 검색창에서 검색해주세요."}
+                </p>
+              )}
+              {/* 전체 선택 */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
                 <input
@@ -736,7 +756,6 @@ export default function HomePage() {
                   </div>
                 </div>
               )}
-
             {/* 상품 목록 */}
             <div className="max-h-[540px] space-y-2 overflow-y-auto">
               {visible.map((product) => (
@@ -766,7 +785,10 @@ export default function HomePage() {
                       {" · "}
                       {product.product_code ||
                         `상품번호 ${product.product_no}`}
-                    </p>
+                                        </p>
+                    {tab === "queue" && queue.some(item => item.mall_id === product.mall && item.product_no === product.product_no) && (
+                      <p className="mt-1 text-xs text-amber-700">해제 예정 {queue.find(item => item.mall_id === product.mall && item.product_no === product.product_no)?.scheduled_date || "날짜 미지정"}</p>
+                    )}
                   </div>
                   <span
                     className={`shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold ${
@@ -891,16 +913,21 @@ export default function HomePage() {
                       busy || selected.length === 0
                     }
                     onClick={() =>
-                      void updateQueue("DELETE")
+                                            void updateQueue("POST")
                     }
                     className="rounded-xl border border-slate-200 py-4 font-bold text-slate-600 disabled:opacity-40"
                   >
-                    예정 목록에서 삭제
+                                        선택 {selected.length}개 해제 예정 등록
                   </button>
+                                  {selected.length > 0 && chosen.every(product => queue.some(item => item.mall_id === product.mall && item.product_no === product.product_no)) && (
+                    <button type="button" disabled={busy} onClick={() => void updateQueue("DELETE")} className="mt-3 w-full text-sm text-slate-500 underline hover:text-rose-600">선택한 예정 등록 취소 (이력 보관)</button>
+                  )}
                 </div>
               )}
-            </div>
-            {/* 추가 설정 */}
+
+              </div>
+
+              {/* 추가 설정 */}
             <div className="border-t border-slate-100 pt-5">
               <button
                 type="button"
@@ -1009,6 +1036,7 @@ export default function HomePage() {
           </div>
         )}
       </div>
+                <QueueDateDialog open={queueDateOpen} count={chosen.length} busy={busy} onCancel={() => setQueueDateOpen(false)} onSubmit={date => void updateQueue("POST", date)} />
         <ConfirmDialog open={confirmDialog !== null} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} yesLabel={confirmDialog?.yesLabel || "예"} noLabel={confirmDialog?.noLabel || "아니요"} onAnswer={closeConfirm} />
         <InputDialog open={inputDialog !== null} title={inputDialog?.title || ""} description={inputDialog?.description || ""} onAnswer={closeInput} />
         <ResultDialog info={resultDialog} onClose={() => setResultDialog(null)} />
