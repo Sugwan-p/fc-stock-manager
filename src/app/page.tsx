@@ -145,6 +145,7 @@ export default function HomePage() {
   const [message, setMessage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [priceText, setPriceText] = useState("");
+  const [hideWhenStopping, setHideWhenStopping] = useState(false);
   const loadMalls = useCallback(async () => {
     const data = await api<{ malls: Mall[] }>("/api/malls");
     setMalls(data.malls || []);
@@ -364,9 +365,9 @@ export default function HomePage() {
     let text: string | undefined;
     let clearPriceContent = false;
     if (action === "stop") {
-      const wantsText = await askConfirm("대체 문구 등록", "대체 문구를 등록하시겠습니까? 문구를 입력하면 판매안함 + 진열함, 등록하지 않거나 빈칸이면 판매안함 + 진열안함으로 처리합니다. 기존 대체 문구도 삭제됩니다.", "예, 등록", "아니요, 진열안함");
+      const wantsText = await askConfirm("대체 문구 등록", "대체 문구를 등록하시겠습니까? 문구를 입력하면 진열함으로 변경합니다. 단, 진열안함 함께 적용을 체크했다면 진열안함이 우선됩니다. 문구를 등록하지 않으면 기존 문구를 삭제합니다.", "예, 등록", "아니요, 문구 없음");
       if (wantsText) {
-        const entered = await askInput("대체 문구 입력", "최대 20자까지 입력할 수 있습니다. 빈칸으로 등록하면 진열안함 처리하고 기존 대체 문구도 삭제합니다.");
+        const entered = await askInput("대체 문구 입력", "최대 20자까지 입력할 수 있습니다. 빈칸으로 등록하면 기존 대체 문구를 삭제합니다. 진열 상태는 체크박스 설정에 따릅니다.");
         if (entered === null) return;
         text = entered.trim();
       }
@@ -381,7 +382,7 @@ export default function HomePage() {
       } else {
         const entered = await askInput(
           "대체 문구 변경 (품절 유지)",
-          "새 문구를 입력하면 품절 상태를 유지하고 진열함으로 변경합니다. 빈칸으로 저장하면 문구를 삭제하고 진열안함으로 변경합니다. 최대 20자입니다."
+          "새 문구를 입력하면 품절 상태를 유지하고 진열함으로 변경합니다. 빈칸으로 저장하면 문구만 삭제하고 기존 진열 상태를 유지합니다. 최대 20자입니다."
         );
         if (entered === null) return;
         effectiveAction = "price";
@@ -394,7 +395,7 @@ export default function HomePage() {
     try {
       const result = await api<{ success: number; failed: number; results?: { mall: string; product_no: number; ok: boolean; error?: string }[] }>("/api/bulk", {
         method: "POST",
-        body: JSON.stringify({ items, action: effectiveAction, ...(text !== undefined ? { text } : {}), ...(effectiveAction === "resume" ? { clearPriceContent } : {}) }),
+        body: JSON.stringify({ items, action: effectiveAction, ...(text !== undefined ? { text } : {}), ...(effectiveAction === "stop" ? { hideWhenStopping } : {}), ...(effectiveAction === "resume" ? { clearPriceContent } : {}) }),
       });
         const successfulKeys = new Set((result.results || []).filter(r => r.ok).map(r => `${r.mall}:${r.product_no}`));
         if (successfulKeys.size > 0) {
@@ -876,6 +877,23 @@ export default function HomePage() {
             {/* 일괄 처리 */}
             <div className="border-t border-slate-100 pt-5">
               {tab === "stop" && (
+                <div className="space-y-3">
+                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={hideWhenStopping}
+                      onChange={(event) => setHideWhenStopping(event.target.checked)}
+                      disabled={busy}
+                      className="mt-0.5 h-4 w-4 accent-rose-600"
+                    />
+                    <span className="text-sm text-slate-700">
+                      <span className="block font-semibold">진열안함 함께 적용</span>
+                      <span className="mt-1 block text-xs text-slate-500">
+                        체크하면 품절 처리 시 판매안함 + 진열안함으로 변경합니다.
+                        체크하지 않으면 문구 입력 시 진열함, 문구 미입력 시 기존 진열 상태를 유지합니다.
+                      </span>
+                    </span>
+                  </label>
                 <button
                   type="button"
                   disabled={
@@ -888,6 +906,7 @@ export default function HomePage() {
                 >
                   선택 {selected.length}개 일괄 품절 처리
                 </button>
+                </div>
               )}
               {tab === "resume" && (
                 <div className="grid gap-3 md:grid-cols-2">
