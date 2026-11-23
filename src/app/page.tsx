@@ -90,6 +90,18 @@ export default function HomePage() {
   const [confirmDialog, setConfirmDialog] = useState<{ title: string; description: string; yesLabel: string; noLabel: string } | null>(null);
   const [inputDialog, setInputDialog] = useState<{ title: string; description: string } | null>(null);
   const [resultDialog, setResultDialog] = useState<ResultInfo | null>(null);
+  const [resumeChoiceOpen, setResumeChoiceOpen] = useState(false);
+  const resumeChoiceResolver = useRef<((choice: "release" | "phrase" | "cancel") => void) | null>(null);
+  const askResumeChoice = () => new Promise<"release" | "phrase" | "cancel">((resolve) => {
+    resumeChoiceResolver.current = resolve;
+    setResumeChoiceOpen(true);
+  });
+  const closeResumeChoice = (choice: "release" | "phrase" | "cancel") => {
+    setResumeChoiceOpen(false);
+    resumeChoiceResolver.current?.(choice);
+    resumeChoiceResolver.current = null;
+  };
+
   const confirmResolver = useRef<((answer: boolean) => void) | null>(null);
   const inputResolver = useRef<((answer: string | null) => void) | null>(null);
   const askConfirm = (title: string, description: string, yesLabel = "예", noLabel = "아니요") => new Promise<boolean>((resolve) => {
@@ -360,9 +372,21 @@ export default function HomePage() {
       }
     }
     if (action === "stop" && text === undefined) text = "";
+    let effectiveAction: Action = action;
     if (action === "resume") {
-      const hasPhrase = chosen.some((p) => Boolean(p.price_content?.trim()));
-      if (hasPhrase) clearPriceContent = await askConfirm("기존 대체 문구 삭제", "선택 상품 중 기존 대체 문구가 있습니다. 문구를 삭제한 뒤 품절 해제하시겠습니까? 아니요를 선택하면 문구를 유지합니다.", "예, 삭제 후 해제", "아니요, 유지 후 해제");
+      const choice = await askResumeChoice();
+      if (choice === "cancel") return;
+      if (choice === "release") {
+        clearPriceContent = true;
+      } else {
+        const entered = await askInput(
+          "대체 문구 변경 (품절 유지)",
+          "새 문구를 입력하면 품절 상태를 유지하고 진열함으로 변경합니다. 빈칸으로 저장하면 문구를 삭제하고 진열안함으로 변경합니다. 최대 20자입니다."
+        );
+        if (entered === null) return;
+        effectiveAction = "price";
+        text = entered.trim();
+      }
     }
     if (action === "price") text = priceText;
     setBusy(true);
@@ -370,13 +394,13 @@ export default function HomePage() {
     try {
       const result = await api<{ success: number; failed: number; results?: { mall: string; product_no: number; ok: boolean; error?: string }[] }>("/api/bulk", {
         method: "POST",
-        body: JSON.stringify({ items, action, ...(text !== undefined ? { text } : {}), ...(action === "resume" ? { clearPriceContent } : {}) }),
+        body: JSON.stringify({ items, action: effectiveAction, ...(text !== undefined ? { text } : {}), ...(effectiveAction === "resume" ? { clearPriceContent } : {}) }),
       });
         const successfulKeys = new Set((result.results || []).filter(r => r.ok).map(r => `${r.mall}:${r.product_no}`));
         if (successfulKeys.size > 0) {
           setSelectedByTab(current => ({ ...current, [tab]: current[tab].filter(item => !successfulKeys.has(productKey(item))) }));
         }
-              if (action === "resume" && successfulKeys.size > 0) {
+              if (effectiveAction === "resume" && successfulKeys.size > 0) {
           try {
             const completedItems = items.filter(item => successfulKeys.has(`${item.mall}:${item.product_no}`));
             const synced = await api<{ results: { ok: boolean; error?: string }[] }>("/api/queue", {
@@ -393,7 +417,7 @@ export default function HomePage() {
         const failed = (result.results || []).filter((r) => !r.ok);
       const warnings = (result.results || []).filter((r) => r.ok && r.error);
       setResultDialog({
-        title: result.failed === 0 && warnings.length === 0 ? `${labels[action]} 완료` : `${labels[action]} 결과`,
+        title: result.failed === 0 && warnings.length === 0 ? `${labels[effectiveAction]} 완료` : `${labels[effectiveAction]} 결과`,
         success: result.success,
         failed: result.failed,
         details: [...failed, ...warnings].slice(0, 8).map((r) => `${r.mall} / ${r.product_no}: ${r.error || "실패"}`),
@@ -1037,6 +1061,22 @@ export default function HomePage() {
         )}
       </div>
                 <QueueDateDialog open={queueDateOpen} count={chosen.length} busy={busy} onCancel={() => setQueueDateOpen(false)} onSubmit={date => void updateQueue("POST", date)} />
+        {resumeChoiceOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="presentation">
+            <div role="dialog" aria-modal="true" aria-labelledby="resume-choice-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+              <div className="flex items-start justify-between gap-3">
+                <h2 id="resume-choice-title" className="text-lg font-bold text-slate-900">품절 해제 또는 대체 문구 변경</h2>
+                <button type="button" aria-label="취소" onClick={() => closeResumeChoice("cancel")} className="text-slate-400 hover:text-slate-700">✕</button>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-600">품절 해제 시 문구를 삭제하고 판매함 + 진열함으로 변경합니다. 대체 문구 변경을 선택하면 판매안함 상태를 유지합니다.</p>
+              <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                <button type="button" onClick={() => closeResumeChoice("phrase")} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">대체 문구 변경</button>
+                <button type="button" onClick={() => closeResumeChoice("release")} className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">문구 삭제 후 품절 해제</button>
+              </div>
+              <button type="button" onClick={() => closeResumeChoice("cancel")} className="mt-3 w-full py-2 text-sm text-slate-500 hover:text-slate-800">취소</button>
+            </div>
+          </div>
+        )}
         <ConfirmDialog open={confirmDialog !== null} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} yesLabel={confirmDialog?.yesLabel || "예"} noLabel={confirmDialog?.noLabel || "아니요"} onAnswer={closeConfirm} />
         <InputDialog open={inputDialog !== null} title={inputDialog?.title || ""} description={inputDialog?.description || ""} onAnswer={closeInput} />
         <ResultDialog info={resultDialog} onClose={() => setResultDialog(null)} />
